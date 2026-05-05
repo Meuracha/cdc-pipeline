@@ -117,8 +117,7 @@ ecommerce/
 git clone https://github.com/Meuracha/cdc-pipeline.git
 cd cdc-pipeline
 
-cp .env.example .env
-# แก้ไข SLACK_WEBHOOK_URL ใน .env (optional)
+# สร้าง .env และเพิ่ม environment ที่ต้องใช้
 ```
 
 ### 2. รัน Pipeline
@@ -190,7 +189,7 @@ cdc-pipeline/
 │   └── 01_schema.sql         # PostgreSQL schema + seed
 ├── mock_data/
 │   └── generator.py          # Mock transaction generator
-├── .env.example
+├── .env
 ├── .gitignore
 ├── docker-compose.yml
 └── README.md
