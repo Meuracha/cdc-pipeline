@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:15
     container_name: postgres_cdc
+    env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -149,6 +150,8 @@ services:
       - ./connector:/connector
     environment:
       - CONNECT_URL=http://kafka-connect:8083
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     networks:
       - cdc_net
     restart: "no"
