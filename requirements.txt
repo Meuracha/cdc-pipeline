@@ -1,0 +1,10 @@
+kafka-python
+duckdb
+pandas
+streamlit
+psycopg2-binary
+confluent-kafka
+python-dotenv
+requests
+python-dotenv
+plotly

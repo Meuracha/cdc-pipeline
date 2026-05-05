@@ -1,0 +1,185 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres_cdc
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_replication_slots=4
+      -c max_wal_senders=4
+    # ports:              # ลบออก — Postgres ไม่ควร expose ออก host
+    #   - "5432:5432"     # เข้าถึงได้ผ่าน cdc_net ภายในอยู่แล้ว
+    networks:
+      - cdc_net
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper_cdc
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    # ports ไม่จำเป็น — internal only
+    networks:
+      - cdc_net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka_cdc
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"   # เหลือแค่ host port สำหรับ dev tools (เช่น kafka-ui บน local)
+    # ลบ 9092:9092 ออก — ใช้ internal listener แทน
+    networks:
+      - cdc_net
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.5.0
+    container_name: kafka-connect-cdc
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    networks:
+      - cdc_net
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_GROUP_ID: connect-cluster
+      CONNECT_CONFIG_STORAGE_TOPIC: connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+    command: >
+      bash -c "
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.4.2 &&
+        /etc/confluent/docker/run
+      "
+
+  sink-duckdb:
+    build:
+      context: .
+      dockerfile: ./consumers/Dockerfile
+    container_name: sink_duckdb
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - cdc_net
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - DWH_PATH=/app/warehouse/analytics.db
+    volumes:
+      - warehouse_data:/app/warehouse
+
+  dashboard:
+    image: python:3.9-slim
+    container_name: streamlit_dashboard
+    working_dir: /app
+    volumes:
+      - ./dashboard:/app
+      - warehouse_data:/app/warehouse
+      - ./requirements.txt:/app/requirements.txt
+    environment:
+      - DWH_PATH=/app/warehouse/analytics.db
+    ports:
+      - "8501:8501"
+    command: bash -c "pip install --timeout=300 --retries=10 -r requirements.txt && streamlit run app.py"
+    networks:
+      - cdc_net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-cdc
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    networks:
+      - cdc_net
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+
+  connector-setup:
+    image: python:3.9-slim
+    container_name: connector_setup
+    depends_on:
+      kafka-connect:
+        condition: service_started
+    command: >
+      bash -c "
+        pip install requests -q &&
+        python /connector/wait_and_register.py
+      "
+    volumes:
+      - ./connector:/connector
+    environment:
+      - CONNECT_URL=http://kafka-connect:8083
+    networks:
+      - cdc_net
+    restart: "no"
+
+  data-generator:
+    image: python:3.9-slim
+    container_name: data_generator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "
+        pip install psycopg2-binary -q &&
+        python /mock_data/generator.py
+      "
+    volumes:
+      - ./mock_data:/mock_data
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB}
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      - cdc_net
+    restart: unless-stopped
+
+networks:
+  cdc_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  warehouse_data:

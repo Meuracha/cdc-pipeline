@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# DuckDB warehouse (ไฟล์ DB)
+warehouse/
+*.db
+*.db.wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
